@@ -51,6 +51,22 @@ export class StateStore {
     return this.state;
   }
 
+  reload(): void {
+    if (fs.existsSync(STATE_FILE)) {
+      try {
+        const raw = fs.readFileSync(STATE_FILE, "utf-8");
+        const loaded = JSON.parse(raw) as AppState;
+        // Keep daemon info from current process
+        this.state = {
+          ...loaded,
+          daemon: this.state.daemon,
+        };
+      } catch {
+        // Keep current state if file is corrupted
+      }
+    }
+  }
+
   getSession(id: string): Session | undefined {
     return this.state.sessions[id];
   }

@@ -16,6 +16,7 @@ const HELP = `
     stop        Stop the daemon
     dash        Open the dashboard TUI
     new         Create and launch a new session
+    rm          Remove a session
     status      Show quick status of all sessions
     help        Show this help message
 
@@ -26,7 +27,8 @@ const HELP = `
   Examples:
     elementerm start
     elementerm dash
-    elementerm new --project myapp --worktree feat-auth
+    elementerm new --project myapp --worktree feat-auth --domain BACK
+    elementerm rm --worktree feat-auth
     elementerm status
 `;
 
@@ -66,6 +68,10 @@ async function main(): Promise<void> {
 
     case "new":
       await newSession();
+      break;
+
+    case "rm":
+      await removeSession();
       break;
 
     case "status":
@@ -250,8 +256,141 @@ async function newSession(): Promise<void> {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
   }
 
+  // Install Claude Code hooks in the worktree
+  await installHooks(cwd, session.id);
+
   const domainTag = domain ? ` [${domain}]` : "";
   console.log(`Session launched: ${values.project}/${values.worktree}${domainTag} (${branch})`);
+}
+
+async function installHooks(cwd: string, sessionId: string): Promise<void> {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+
+  const claudeDir = path.default.join(cwd, ".claude");
+  const settingsPath = path.default.join(claudeDir, "settings.json");
+
+  // Find the hook script
+  const entryScript = fileURLToPath(import.meta.url);
+  const hookScript = path.default.resolve(path.default.dirname(entryScript), "..", "hooks", "elementerm-hook.js");
+
+  if (!fs.existsSync(hookScript)) {
+    console.log("  (hook script not found, skipping hook installation)");
+    return;
+  }
+
+  // Normalize to forward slashes for cross-platform compatibility
+  const hookPath = hookScript.replace(/\\/g, "/");
+
+  const hookEntry = {
+    matcher: "",
+    hooks: [{ type: "command" as const, command: `node "${hookPath}"` }],
+  };
+
+  const hookConfig = {
+    hooks: {
+      PostToolUse: [hookEntry],
+      Stop: [hookEntry],
+    },
+  };
+
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  // Merge with existing settings if present
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    } catch {
+      // Corrupted, start fresh
+    }
+  }
+
+  settings.hooks = hookConfig.hooks;
+  if (!settings.env || typeof settings.env !== "object") {
+    settings.env = {};
+  }
+  (settings.env as Record<string, string>).ELEMENTERM_SESSION_ID = sessionId;
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+  console.log(`  Hooks installed in ${claudeDir}`);
+}
+
+async function removeSession(): Promise<void> {
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: {
+      worktree: { type: "string", short: "w" },
+      all: { type: "boolean" },
+    },
+  });
+
+  if (!values.worktree && !values.all) {
+    console.error("Usage: elementerm rm --worktree <name> | --all");
+    process.exit(1);
+  }
+
+  const fs = await import("node:fs");
+  const net = await import("node:net");
+  const { STATE_FILE, IPC_PATH } = await import("./shared/constants.js");
+  const { serialize } = await import("./shared/ipc-protocol.js");
+
+  if (!fs.existsSync(STATE_FILE)) {
+    console.log("No sessions to remove.");
+    return;
+  }
+
+  const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  const entries = Object.entries(state.sessions) as Array<[string, { id: string; worktree: string; project: string }]>;
+
+  // Determine which sessions to remove
+  let toRemove: Array<{ id: string; worktree: string; project: string }>;
+  if (values.all) {
+    toRemove = entries.map(([, s]) => s);
+  } else {
+    const match = entries.find(([, s]) => s.worktree === values.worktree);
+    if (!match) {
+      console.error(`Session with worktree "${values.worktree}" not found.`);
+      process.exit(1);
+    }
+    toRemove = [match[1]];
+  }
+
+  // Remove from state file directly (instant for status reads)
+  for (const session of toRemove) {
+    delete state.sessions[session.id];
+    const project = state.projects[session.project];
+    if (project) {
+      project.sessions = project.sessions.filter((sid: string) => sid !== session.id);
+      if (project.sessions.length === 0) {
+        delete state.projects[session.project];
+      }
+    }
+  }
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+
+  // Also notify daemon via IPC to sync its in-memory state
+  for (const session of toRemove) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const client = net.createConnection(IPC_PATH, () => {
+          client.write(serialize({ type: "session_removed", payload: session }));
+          client.end();
+          resolve();
+        });
+        client.on("error", reject);
+        setTimeout(() => reject(new Error("timeout")), 2000);
+      });
+    } catch {
+      // Daemon not running, file already updated above
+    }
+  }
+
+  if (values.all) {
+    console.log(`Removed ${toRemove.length} session(s).`);
+  } else {
+    console.log(`Removed session: ${toRemove[0].project}/${toRemove[0].worktree}`);
+  }
 }
 
 async function showStatus(): Promise<void> {

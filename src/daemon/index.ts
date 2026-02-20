@@ -46,8 +46,8 @@ export class Daemon {
       } else if (msg.type === "session_created") {
         this.store.addSession(msg.payload as Session);
       } else if (msg.type === "session_removed") {
-        const session = msg.payload as Session;
-        this.store.removeSession(session.id);
+        // Reload from file first (rm command writes file before sending IPC)
+        this.store.reload();
       }
       // Broadcast updated state to all connected dashboards
       this.ipc.broadcastState(this.store.getState());

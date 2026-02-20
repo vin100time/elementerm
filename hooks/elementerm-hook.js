@@ -15,7 +15,7 @@ const IPC_PATH =
     : join(process.env.HOME || "~", ".elementerm", "elementerm.sock");
 
 try {
-  // Read hook input from stdin
+  // Read hook input from stdin (Claude Code sends JSON)
   let input = "";
   try {
     input = readFileSync(0, "utf-8"); // fd 0 = stdin
@@ -30,8 +30,12 @@ try {
     // Not JSON, ignore
   }
 
-  const event = process.env.ELEMENTERM_EVENT || "PostToolUse";
-  const sessionId = hookData.session_id || process.env.CLAUDE_SESSION_ID || "unknown";
+  // Session ID from environment (set by elementerm during hook installation)
+  const sessionId = process.env.ELEMENTERM_SESSION_ID || "unknown";
+
+  // Event type: Claude Code hook names map to our events
+  // The hook_event_name field tells us which hook fired
+  const event = hookData.hook_event_name || process.env.ELEMENTERM_EVENT || "PostToolUse";
 
   const message = JSON.stringify({
     type: "hook_event",
@@ -39,7 +43,7 @@ try {
       sessionId,
       event,
       tool: hookData.tool_name || null,
-      filePath: hookData.file_path || null,
+      filePath: hookData.tool_input?.file_path || hookData.file_path || null,
       timestamp: Date.now(),
     },
   }) + "\n";
