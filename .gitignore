@@ -1,0 +1,25 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Elementerm runtime
+.elementerm/
+
+# BMAD output (tracked separately)
+# _bmad-output/
+
+# Logs
+*.log
+npm-debug.log*
