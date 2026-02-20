@@ -3,11 +3,11 @@ import type { SpawnOptions, SpawnResult } from "./index.js";
 
 export async function spawnMacos(options: SpawnOptions): Promise<SpawnResult> {
   return new Promise((resolve) => {
-    // Use osascript to open a new Terminal.app window
+    // Unset CLAUDECODE so the new session doesn't detect nesting
     const script = `
       tell application "Terminal"
         activate
-        do script "cd '${options.cwd}' && claude"
+        do script "unset CLAUDECODE && cd '${options.cwd}' && claude"
       end tell
     `;
 

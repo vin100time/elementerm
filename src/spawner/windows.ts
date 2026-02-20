@@ -1,10 +1,19 @@
 import { spawn } from "node:child_process";
 import type { SpawnOptions, SpawnResult } from "./index.js";
 
+// Strip Claude Code env vars so the new session doesn't detect nesting
+function cleanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_SESSION_ID;
+  return env;
+}
+
 export async function spawnWindows(
   options: SpawnOptions
 ): Promise<SpawnResult> {
   const title = options.title || `${options.project}/${options.worktree}`;
+  const env = cleanEnv();
 
   try {
     // Use Windows Terminal (wt.exe) to open a new tab with claude
@@ -12,7 +21,7 @@ export async function spawnWindows(
       "wt.exe",
       [
         "-w",
-        "0", // Current window (use "new" for a new window)
+        "0", // Current window (new tab in same window)
         "nt", // New tab
         "--title",
         title,
@@ -24,6 +33,7 @@ export async function spawnWindows(
       {
         detached: true,
         stdio: "ignore",
+        env,
       }
     );
 
@@ -39,6 +49,7 @@ export async function spawnWindows(
       const child = spawn("cmd.exe", ["/c", "start", "cmd", "/k", `cd /d "${options.cwd}" && claude`], {
         detached: true,
         stdio: "ignore",
+        env,
       });
       child.unref();
 

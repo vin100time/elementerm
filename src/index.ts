@@ -163,31 +163,45 @@ async function newSession(): Promise<void> {
       worktree: { type: "string", short: "w" },
       domain: { type: "string", short: "d" },
       branch: { type: "string", short: "b" },
+      template: { type: "string", short: "t" },
     },
   });
 
-  if (!values.project || !values.worktree) {
-    console.error("Usage: elementerm new --project <name> --worktree <name> [--domain BACK|FRONT|SEO|...] [--branch <name>]");
+  if (!values.worktree) {
+    console.error("Usage: elementerm new --worktree <name> [--project <name>] [--domain BACK|FRONT|SEO|...] [--branch <name>] [--template <name>]");
     process.exit(1);
   }
 
+  const fs = await import("node:fs");
   const path = await import("node:path");
   const { execSync } = await import("node:child_process");
   const net = await import("node:net");
   const crypto = await import("node:crypto");
   const cwd = path.default.resolve(process.cwd());
 
-  // Detect git branch if not specified
-  let branch = values.branch || "unknown";
-  if (!values.branch) {
+  // --- Step 0: Validate we're in a git repo ---
+  let gitRoot: string;
+  try {
+    gitRoot = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8" }).trim();
+  } catch {
+    console.error("Not a git repository. Run this from inside a git project.");
+    process.exit(1);
+  }
+
+  // --- Step 1: Auto-detect project name if not specified ---
+  let project = values.project;
+  if (!project) {
     try {
-      branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8" }).trim();
+      const remoteUrl = execSync("git remote get-url origin", { cwd: gitRoot, encoding: "utf-8" }).trim();
+      // Extract repo name from URL (handles both https and ssh)
+      project = path.default.basename(remoteUrl, ".git");
     } catch {
-      // Not a git repo or git not available
+      // No remote, use directory name
+      project = path.default.basename(gitRoot);
     }
   }
 
-  // Validate domain
+  // --- Step 2: Validate domain ---
   const validDomains = ["BACK", "FRONT", "SEO", "SEC", "TEST", "INFRA", "DOC"];
   const domain = values.domain?.toUpperCase() || null;
   if (domain && !validDomains.includes(domain)) {
@@ -195,13 +209,53 @@ async function newSession(): Promise<void> {
     process.exit(1);
   }
 
-  // Spawn the native terminal
+  // --- Step 3: Create git worktree ---
+  const worktreeName = values.worktree;
+  const worktreeDir = path.default.join(gitRoot, ".worktrees", worktreeName);
+  const branch = values.branch || `wt/${worktreeName}`;
+
+  let worktreeCwd: string;
+  if (fs.existsSync(worktreeDir)) {
+    console.log(`  Worktree "${worktreeName}" already exists, reusing.`);
+    worktreeCwd = worktreeDir;
+  } else {
+    try {
+      // Check if branch already exists
+      let branchExists = false;
+      try {
+        execSync(`git rev-parse --verify ${branch}`, { cwd: gitRoot, encoding: "utf-8", stdio: "pipe" });
+        branchExists = true;
+      } catch {
+        // Branch doesn't exist yet
+      }
+
+      if (branchExists) {
+        execSync(`git worktree add "${worktreeDir}" ${branch}`, { cwd: gitRoot, encoding: "utf-8" });
+      } else {
+        execSync(`git worktree add -b ${branch} "${worktreeDir}"`, { cwd: gitRoot, encoding: "utf-8" });
+      }
+      console.log(`  Worktree created: ${worktreeDir} (${branch})`);
+      worktreeCwd = worktreeDir;
+    } catch (error) {
+      console.error(`Failed to create worktree: ${error}`);
+      process.exit(1);
+    }
+  }
+
+  // --- Step 4: Copy CLAUDE.md template ---
+  await copyTemplate(worktreeCwd, domain, values.template);
+
+  // --- Step 5: Install hooks ---
+  const sessionId = crypto.randomUUID();
+  await installHooks(worktreeCwd, sessionId);
+
+  // --- Step 6: Spawn native terminal ---
   const { spawnNativeTerminal } = await import("./spawner/index.js");
   const result = await spawnNativeTerminal({
-    project: values.project,
-    worktree: values.worktree,
-    cwd,
-    title: `${values.project}/${values.worktree}`,
+    project,
+    worktree: worktreeName,
+    cwd: worktreeCwd,
+    title: `${project}/${worktreeName}`,
   });
 
   if (!result.success) {
@@ -209,14 +263,11 @@ async function newSession(): Promise<void> {
     process.exit(1);
   }
 
-  // Register session with daemon via IPC
-  const { IPC_PATH } = await import("./shared/constants.js");
-  const { serialize } = await import("./shared/ipc-protocol.js");
-
+  // --- Step 7: Register session ---
   const session = {
-    id: crypto.randomUUID(),
-    project: values.project,
-    worktree: values.worktree,
+    id: sessionId,
+    project,
+    worktree: worktreeName,
     branch,
     status: "idle" as const,
     domain: domain as import("./shared/types.js").SessionDomain,
@@ -225,14 +276,16 @@ async function newSession(): Promise<void> {
     filesModified: [],
     terminalPid: result.terminalPid || null,
     claudeSessionId: null,
-    cwd,
+    cwd: worktreeCwd,
   };
+
+  const { IPC_PATH } = await import("./shared/constants.js");
+  const { serialize } = await import("./shared/ipc-protocol.js");
 
   try {
     await new Promise<void>((resolve, reject) => {
       const client = net.createConnection(IPC_PATH, () => {
-        const msg = serialize({ type: "session_created", payload: session });
-        client.write(msg);
+        client.write(serialize({ type: "session_created", payload: session }));
         client.end();
         resolve();
       });
@@ -241,7 +294,6 @@ async function newSession(): Promise<void> {
     });
   } catch {
     // Daemon not running, write directly to state file
-    const fs = await import("node:fs");
     const { STATE_FILE, ELEMENTERM_DIR } = await import("./shared/constants.js");
     fs.mkdirSync(ELEMENTERM_DIR, { recursive: true });
     let state = { sessions: {} as Record<string, typeof session>, projects: {} as Record<string, { name: string; path: string; sessions: string[] }>, daemon: { startedAt: "", pid: 0, version: VERSION } };
@@ -249,18 +301,52 @@ async function newSession(): Promise<void> {
       try { state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8")); } catch { /* fresh state */ }
     }
     state.sessions[session.id] = session;
-    if (!state.projects[session.project]) {
-      state.projects[session.project] = { name: session.project, path: path.default.dirname(cwd), sessions: [] };
+    if (!state.projects[project]) {
+      state.projects[project] = { name: project, path: gitRoot, sessions: [] };
     }
-    state.projects[session.project].sessions.push(session.id);
+    state.projects[project].sessions.push(session.id);
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
   }
 
-  // Install Claude Code hooks in the worktree
-  await installHooks(cwd, session.id);
-
   const domainTag = domain ? ` [${domain}]` : "";
-  console.log(`Session launched: ${values.project}/${values.worktree}${domainTag} (${branch})`);
+  console.log(`  Session launched: ${project}/${worktreeName}${domainTag} (${branch})`);
+}
+
+async function copyTemplate(worktreeCwd: string, domain: string | null, templateName?: string): Promise<void> {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+
+  const claudeMdPath = path.default.join(worktreeCwd, "CLAUDE.md");
+
+  // Don't overwrite existing CLAUDE.md
+  if (fs.existsSync(claudeMdPath)) {
+    console.log("  CLAUDE.md already exists, keeping it.");
+    return;
+  }
+
+  // Find template
+  const entryScript = fileURLToPath(import.meta.url);
+  const templatesDir = path.default.resolve(path.default.dirname(entryScript), "..", "templates");
+
+  // Priority: explicit --template > domain-based > default
+  const templateFile = templateName
+    ? `${templateName}.md`
+    : domain
+      ? `${domain.toLowerCase()}.md`
+      : "default.md";
+
+  const templatePath = path.default.join(templatesDir, templateFile);
+  const defaultPath = path.default.join(templatesDir, "default.md");
+
+  const sourcePath = fs.existsSync(templatePath) ? templatePath : fs.existsSync(defaultPath) ? defaultPath : null;
+
+  if (!sourcePath) {
+    console.log("  No CLAUDE.md template found, skipping.");
+    return;
+  }
+
+  fs.copyFileSync(sourcePath, claudeMdPath);
+  console.log(`  CLAUDE.md installed (template: ${path.default.basename(sourcePath, ".md")})`);
 }
 
 async function installHooks(cwd: string, sessionId: string): Promise<void> {
@@ -322,11 +408,12 @@ async function removeSession(): Promise<void> {
     options: {
       worktree: { type: "string", short: "w" },
       all: { type: "boolean" },
+      cleanup: { type: "boolean" },
     },
   });
 
   if (!values.worktree && !values.all) {
-    console.error("Usage: elementerm rm --worktree <name> | --all");
+    console.error("Usage: elementerm rm --worktree <name> [--cleanup] | --all [--cleanup]");
     process.exit(1);
   }
 
@@ -340,7 +427,8 @@ async function removeSession(): Promise<void> {
     return;
   }
 
-  const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  const origState = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  const state = JSON.parse(JSON.stringify(origState));
   const entries = Object.entries(state.sessions) as Array<[string, { id: string; worktree: string; project: string }]>;
 
   // Determine which sessions to remove
@@ -383,6 +471,30 @@ async function removeSession(): Promise<void> {
       });
     } catch {
       // Daemon not running, file already updated above
+    }
+  }
+
+  // Optionally remove git worktrees
+  if (values.cleanup) {
+    const { execSync } = await import("node:child_process");
+    for (const session of toRemove) {
+      const sessionFull = Object.values(origState.sessions).find((s: Record<string, unknown>) => s.id === session.id) as { cwd?: string } | undefined;
+      if (sessionFull?.cwd) {
+        try {
+          // Check for uncommitted changes to tracked files (ignore untracked)
+          const status = execSync("git diff --name-only HEAD", { cwd: sessionFull.cwd, encoding: "utf-8", stdio: "pipe" }).trim();
+          const staged = execSync("git diff --cached --name-only", { cwd: sessionFull.cwd, encoding: "utf-8", stdio: "pipe" }).trim();
+          if (status || staged) {
+            console.log(`  Worktree "${session.worktree}" has uncommitted changes, skipping cleanup.`);
+            console.log(`  Use 'git stash' or commit first, then retry with --cleanup.`);
+            continue;
+          }
+          execSync(`git worktree remove --force "${sessionFull.cwd}"`, { encoding: "utf-8", stdio: "pipe" });
+          console.log(`  Worktree removed: ${sessionFull.cwd}`);
+        } catch {
+          console.log(`  Could not remove worktree for "${session.worktree}" (may not be a worktree).`);
+        }
+      }
     }
   }
 
