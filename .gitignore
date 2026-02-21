@@ -16,6 +16,8 @@ Thumbs.db
 
 # Elementerm runtime
 .elementerm/
+.worktrees/
+.claude/
 
 # BMAD output (tracked separately)
 # _bmad-output/

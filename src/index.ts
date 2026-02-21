@@ -358,7 +358,7 @@ async function installHooks(cwd: string, sessionId: string): Promise<void> {
 
   // Find the hook script
   const entryScript = fileURLToPath(import.meta.url);
-  const hookScript = path.default.resolve(path.default.dirname(entryScript), "..", "hooks", "elementerm-hook.js");
+  const hookScript = path.default.resolve(path.default.dirname(entryScript), "..", "hooks", "elementerm-hook.mjs");
 
   if (!fs.existsSync(hookScript)) {
     console.log("  (hook script not found, skipping hook installation)");

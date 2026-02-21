@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from "react";
-import { render, Box, Text, useInput, useApp } from "ink";
+import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import net from "node:net";
 import fs from "node:fs";
-import { IPC_PATH, PID_FILE, STATE_FILE, VERSION } from "../shared/constants.js";
+import { IPC_PATH, PID_FILE, STATE_FILE } from "../shared/constants.js";
 import { deserialize } from "../shared/ipc-protocol.js";
 import type { AppState, Session, ViewMode } from "../shared/types.js";
 import { GlanceView } from "./views/glance.js";
 import { ScanView } from "./views/scan.js";
 import { FocusView } from "./views/focus.js";
+import { MasterPanel } from "./master-panel.js";
 
 function useDaemonConnection(): AppState | null {
   const [state, setState] = useState<AppState | null>(null);
@@ -48,7 +49,7 @@ function useDaemonConnection(): AppState | null {
     });
 
     client.on("error", () => {
-      // Daemon not running or connection lost - keep showing last state
+      // Daemon not running - keep showing file state
     });
 
     // Poll state file as fallback
@@ -72,123 +73,33 @@ function useDaemonConnection(): AppState | null {
   return state;
 }
 
-function App() {
-  const { exit } = useApp();
-  const state = useDaemonConnection();
-  const [view, setView] = useState<ViewMode>("scan");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+const STATUS_EMOJI: Record<string, string> = {
+  flow: "🟢",
+  waiting: "🟡",
+  ready: "🔵",
+  attention: "🟠",
+  blocked: "🔴",
+  idle: "⚪",
+};
 
-  const sessions: Session[] = state ? Object.values(state.sessions) : [];
-  const selectedSession = sessions[selectedIndex] || null;
+const STATUS_LABEL: Record<string, string> = {
+  flow: "Flow",
+  waiting: "Waiting",
+  ready: "Ready",
+  attention: "Attention",
+  blocked: "Blocked",
+  idle: "Idle",
+};
 
-  useInput((input, key) => {
-    // View switching
-    if (input === "g") setView("glance");
-    if (input === "s") setView("scan");
-    if (input === "f" && selectedSession) setView("focus");
-    if (input === "q") exit();
-
-    // Navigation
-    if (key.tab) {
-      setSelectedIndex((prev) => (prev + 1) % Math.max(sessions.length, 1));
-    }
-    if (key.return) {
-      setView((prev) => (prev === "focus" ? "scan" : "focus"));
-    }
-    if (key.escape) {
-      if (view === "focus") setView("scan");
-      else if (view === "scan") setView("glance");
-    }
-
-    // Number keys for direct jump
-    const num = parseInt(input);
-    if (num >= 1 && num <= 9 && num <= sessions.length) {
-      setSelectedIndex(num - 1);
-    }
-  });
-
-  return (
-    <Box flexDirection="column" width="100%">
-      <Header
-        sessionCount={sessions.length}
-        view={view}
-        uptime={state?.daemon.startedAt}
-      />
-
-      {sessions.length === 0 ? (
-        <Box padding={1}>
-          <Text color="gray">
-            No active sessions. Run 'elementerm new --project myapp --worktree
-            feat-auth' to create one.
-          </Text>
-        </Box>
-      ) : (
-        <>
-          {view === "glance" && (
-            <GlanceView
-              sessions={sessions}
-              projects={state?.projects || {}}
-              selectedIndex={selectedIndex}
-            />
-          )}
-          {view === "scan" && (
-            <ScanView
-              sessions={sessions}
-              projects={state?.projects || {}}
-              selectedIndex={selectedIndex}
-            />
-          )}
-          {view === "focus" && selectedSession && (
-            <FocusView session={selectedSession} />
-          )}
-        </>
-      )}
-
-      <Footer view={view} />
-    </Box>
-  );
-}
-
-function Header({
-  sessionCount,
-  view,
-  uptime,
-}: {
-  sessionCount: number;
-  view: ViewMode;
-  uptime?: string;
-}) {
-  const elapsed = uptime ? timeSince(uptime) : "-";
-  const viewLabel = view.toUpperCase();
-
-  return (
-    <Box
-      borderStyle="single"
-      borderColor="cyan"
-      paddingX={1}
-      justifyContent="space-between"
-    >
-      <Text bold color="cyan">
-        ELEMENTERM
-      </Text>
-      <Text color="white">
-        {viewLabel} | {sessionCount} session{sessionCount !== 1 ? "s" : ""} |{" "}
-        {elapsed}
-      </Text>
-    </Box>
-  );
-}
-
-function Footer({ view }: { view: ViewMode }) {
-  return (
-    <Box paddingX={1} marginTop={1}>
-      <Text color="gray">
-        [g]lance [s]can [f]ocus [Tab]next [1-9]jump{" "}
-        {view === "focus" ? "[Esc]back " : ""}[q]uit
-      </Text>
-    </Box>
-  );
-}
+const DOMAIN_COLORS: Record<string, string> = {
+  BACK: "cyan",
+  FRONT: "magenta",
+  SEO: "green",
+  SEC: "red",
+  TEST: "yellow",
+  INFRA: "blue",
+  DOC: "white",
+};
 
 function timeSince(isoDate: string): string {
   const seconds = Math.floor(
@@ -196,9 +107,163 @@ function timeSince(isoDate: string): string {
   );
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return `${minutes}min`;
   const hours = Math.floor(minutes / 60);
-  return `${hours}h${minutes % 60}m`;
+  if (hours < 24) return `${hours}h${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function groupByProject(sessions: Session[]): Map<string, Session[]> {
+  const map = new Map<string, Session[]>();
+  for (const s of sessions) {
+    const list = map.get(s.project) || [];
+    list.push(s);
+    map.set(s.project, list);
+  }
+  return map;
+}
+
+function App() {
+  const { exit } = useApp();
+  const state = useDaemonConnection();
+  const [view, setView] = useState<ViewMode>("scan");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [masterActive, setMasterActive] = useState(false);
+
+  const sessions: Session[] = state ? Object.values(state.sessions) : [];
+  const selectedSession = sessions[selectedIndex] || null;
+
+  useInput((input, key) => {
+    // When master panel is active, don't capture keys
+    if (masterActive) return;
+
+    if (input === "g") setView("glance");
+    if (input === "s") setView("scan");
+    if (input === "f" && selectedSession) setView("focus");
+    if (input === "m") { setMasterActive(true); return; }
+    if (input === "q") exit();
+
+    if (key.tab) {
+      setSelectedIndex((prev) => (prev + 1) % Math.max(sessions.length, 1));
+    }
+    if (key.return) {
+      if (view === "focus") setView("scan");
+      else if (selectedSession) setView("focus");
+    }
+    if (key.escape) {
+      if (view === "focus") setView("scan");
+      else if (view === "scan") setView("glance");
+    }
+
+    const num = parseInt(input);
+    if (num >= 1 && num <= 9 && num <= sessions.length) {
+      setSelectedIndex(num - 1);
+    }
+  });
+
+  const { stdout } = useStdout();
+  const termHeight = stdout?.rows || 24;
+  const termWidth = stdout?.columns || 80;
+
+  const elapsed = state?.daemon.startedAt ? timeSince(state.daemon.startedAt) : "-";
+
+  // Breadcrumb for focus view
+  const breadcrumb = view === "focus" && selectedSession
+    ? ` > ${selectedSession.project} > ${selectedSession.worktree}`
+    : "";
+
+  // Header = 3 lines (border + text + border), Footer = 2 lines
+  const bodyHeight = Math.max(termHeight - 5, 5);
+
+  return (
+    <Box flexDirection="column" width={termWidth} height={termHeight}>
+      {/* ═══ HEADER ═══ */}
+      <Box
+        borderStyle="double"
+        borderColor="cyan"
+        paddingX={1}
+        justifyContent="space-between"
+        width="100%"
+      >
+        <Text bold color="cyan">
+          ELEMENTERM{breadcrumb}
+        </Text>
+        <Text color="white">
+          {sessions.length} session{sessions.length !== 1 ? "s" : ""} | {elapsed}
+        </Text>
+      </Box>
+
+      {/* ═══ BODY ═══ */}
+      <Box flexDirection="column" flexGrow={1} height={bodyHeight}>
+        {sessions.length === 0 ? (
+          <Box paddingX={2} paddingY={1} flexGrow={1}>
+            <Text color="gray">
+              No active sessions.{"\n\n"}
+              <Text color="white">Start a session:</Text>{"\n"}
+              <Text color="cyan">  elementerm new -w feat-auth -d BACK</Text>{"\n\n"}
+              <Text color="gray" dimColor>Sessions will appear here in real-time.</Text>
+            </Text>
+          </Box>
+        ) : (
+          <>
+            {view === "glance" && (
+              <GlanceView
+                sessions={sessions}
+                groupByProject={groupByProject}
+                selectedIndex={selectedIndex}
+                statusEmoji={STATUS_EMOJI}
+              />
+            )}
+            {view === "scan" && (
+              <ScanView
+                sessions={sessions}
+                groupByProject={groupByProject}
+                selectedIndex={selectedIndex}
+                statusEmoji={STATUS_EMOJI}
+                domainColors={DOMAIN_COLORS}
+                timeSince={timeSince}
+              />
+            )}
+            {view === "focus" && selectedSession && (
+              <FocusView
+                session={selectedSession}
+                statusEmoji={STATUS_EMOJI}
+                statusLabel={STATUS_LABEL}
+                domainColors={DOMAIN_COLORS}
+                timeSince={timeSince}
+              />
+            )}
+          </>
+        )}
+      </Box>
+
+      {/* ═══ MASTER PANEL ═══ */}
+      <MasterPanel
+        state={state}
+        onClose={() => setMasterActive(false)}
+        active={masterActive}
+      />
+
+      {/* ═══ FOOTER ═══ */}
+      <Box paddingX={1} borderStyle="single" borderColor="gray" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false}>
+        {view === "glance" && (
+          <Text color="gray">
+            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[1-9]</Text>jump  <Text color="white" bold>[q]</Text>uit
+          </Text>
+        )}
+        {view === "scan" && (
+          <Text color="gray">
+            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[Enter]</Text>focus  <Text color="white" bold>[q]</Text>uit
+          </Text>
+        )}
+        {view === "focus" && (
+          <Text color="gray">
+            <Text color="white" bold>[Esc]</Text>back  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[g]</Text>lance  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[q]</Text>uit
+          </Text>
+        )}
+      </Box>
+    </Box>
+  );
 }
 
 export async function renderDashboard(): Promise<void> {
@@ -209,5 +274,7 @@ export async function renderDashboard(): Promise<void> {
     process.exit(1);
   }
 
+  // Clear screen and render fullscreen
+  process.stdout.write("\x1B[2J\x1B[H");
   render(<App />);
 }

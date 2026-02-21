@@ -1,88 +1,63 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { Session, Project } from "../../shared/types.js";
-import { STATUS_COLORS, STATUS_ICONS } from "../../shared/constants.js";
+import type { Session } from "../../shared/types.js";
 
 interface GlanceViewProps {
   sessions: Session[];
-  projects: Record<string, Project>;
+  groupByProject: (sessions: Session[]) => Map<string, Session[]>;
   selectedIndex: number;
+  statusEmoji: Record<string, string>;
 }
 
 export function GlanceView({
   sessions,
-  projects,
+  groupByProject,
   selectedIndex,
+  statusEmoji,
 }: GlanceViewProps) {
-  // Group sessions by project
-  const byProject = new Map<string, Session[]>();
-  for (const session of sessions) {
-    const list = byProject.get(session.project) || [];
-    list.push(session);
-    byProject.set(session.project, list);
-  }
-
+  const byProject = groupByProject(sessions);
   let globalIndex = 0;
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column" paddingX={1} paddingY={1}>
       {[...byProject.entries()].map(([projectName, projectSessions]) => (
         <Box key={projectName} flexDirection="column" marginBottom={1}>
-          <Text bold color="white">
+          <Text color="white" dimColor>
             {projectName}
           </Text>
-          <Box flexDirection="row" gap={1} marginTop={1}>
+          <Box flexDirection="row" gap={1} marginTop={0}>
             {projectSessions.map((session) => {
               const isSelected = globalIndex === selectedIndex;
-              const currentIndex = globalIndex;
+              const idx = globalIndex;
               globalIndex++;
+              const emoji = statusEmoji[session.status] || "⚪";
 
               return (
-                <SessionDot
+                <Box
                   key={session.id}
-                  session={session}
-                  selected={isSelected}
-                  index={currentIndex + 1}
-                />
+                  flexDirection="column"
+                  alignItems="center"
+                  borderStyle={isSelected ? "double" : "single"}
+                  borderColor={isSelected ? "cyan" : "gray"}
+                  paddingX={1}
+                  minWidth={10}
+                >
+                  <Text>{emoji}</Text>
+                  <Text
+                    color={isSelected ? "white" : "gray"}
+                    bold={isSelected}
+                  >
+                    {session.worktree}
+                  </Text>
+                  <Text color="gray" dimColor>
+                    {idx + 1}
+                  </Text>
+                </Box>
               );
             })}
           </Box>
         </Box>
       ))}
-    </Box>
-  );
-}
-
-function SessionDot({
-  session,
-  selected,
-  index,
-}: {
-  session: Session;
-  selected: boolean;
-  index: number;
-}) {
-  const color = STATUS_COLORS[session.status] || "gray";
-  const icon = STATUS_ICONS[session.status] || "?";
-
-  return (
-    <Box
-      flexDirection="column"
-      alignItems="center"
-      borderStyle={selected ? "bold" : "single"}
-      borderColor={selected ? "cyan" : "gray"}
-      paddingX={1}
-      minWidth={8}
-    >
-      <Text color={color} bold>
-        {icon}
-      </Text>
-      <Text color={selected ? "white" : "gray"} dimColor={!selected}>
-        {session.worktree}
-      </Text>
-      <Text color="gray" dimColor>
-        {index}
-      </Text>
     </Box>
   );
 }
