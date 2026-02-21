@@ -70,6 +70,6 @@ export interface HookEvent {
 }
 
 export interface IpcMessage {
-  type: "state_update" | "session_created" | "session_removed" | "hook_event";
-  payload: Partial<AppState> | Session | HookEvent;
+  type: "state_update" | "session_created" | "session_removed" | "hook_event" | "daemon_shutdown";
+  payload: Partial<AppState> | Session | HookEvent | null;
 }

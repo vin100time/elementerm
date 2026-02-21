@@ -41,6 +41,10 @@ export class Daemon {
 
     // Set up IPC message handling
     this.ipc.onMessage((msg) => {
+      if (msg.type === "daemon_shutdown") {
+        this.stop();
+        return;
+      }
       if (msg.type === "hook_event") {
         this.hookHandler.handle(msg.payload as HookEvent);
       } else if (msg.type === "session_created") {
@@ -69,6 +73,10 @@ export class Daemon {
     if (!this.running) return;
 
     console.log("Elementerm daemon stopping...");
+
+    // Mark all sessions as idle before shutdown
+    this.store.setAllSessionsIdle();
+    this.store.persist();
 
     await this.ipc.stop();
 

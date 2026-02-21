@@ -1,5 +1,17 @@
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import type { SpawnOptions, SpawnResult } from "./index.js";
+
+export function focusMacos(): boolean {
+  try {
+    execSync(`osascript -e 'tell application "Terminal" to activate'`, {
+      stdio: "ignore",
+      timeout: 3000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function spawnMacos(options: SpawnOptions): Promise<SpawnResult> {
   return new Promise((resolve) => {

@@ -18,6 +18,7 @@ const HELP = `
     new         Create and launch a new session
     rm          Remove a session
     status      Show quick status of all sessions
+    reset       Clear all sessions and state
     help        Show this help message
 
   Options:
@@ -78,6 +79,10 @@ async function main(): Promise<void> {
       await showStatus();
       break;
 
+    case "reset":
+      await resetState();
+      break;
+
     default:
       console.error(`Unknown command: ${command}`);
       console.log(HELP);
@@ -125,7 +130,9 @@ async function startDaemon(): Promise<void> {
 
 async function stopDaemon(): Promise<void> {
   const fs = await import("node:fs");
-  const { PID_FILE } = await import("./shared/constants.js");
+  const net = await import("node:net");
+  const { PID_FILE, IPC_PATH } = await import("./shared/constants.js");
+  const { serialize } = await import("./shared/ipc-protocol.js");
 
   if (!fs.existsSync(PID_FILE)) {
     console.log("Elementerm daemon is not running.");
@@ -134,19 +141,42 @@ async function stopDaemon(): Promise<void> {
 
   const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim());
 
+  // Try graceful shutdown via IPC first (works on all platforms)
+  let ipcSent = false;
   try {
-    process.kill(pid, "SIGTERM");
-    console.log(`Elementerm daemon stopped (PID: ${pid}).`);
+    await new Promise<void>((resolve, reject) => {
+      const client = net.createConnection(IPC_PATH, () => {
+        client.write(serialize({ type: "daemon_shutdown", payload: null }));
+        client.end();
+        ipcSent = true;
+        resolve();
+      });
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 2000);
+    });
+    // Wait for daemon to process the shutdown
+    await new Promise((resolve) => setTimeout(resolve, 500));
   } catch {
-    console.log("Daemon process not found. Cleaning up...");
+    // IPC failed, fallback to SIGTERM
   }
 
-  // Always clean up PID file (on Windows, SIGTERM kills without running handlers)
+  // Fallback: SIGTERM if IPC didn't work
+  if (!ipcSent) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process already gone
+    }
+  }
+
+  // Always clean up PID file (safety net)
   try {
     fs.unlinkSync(PID_FILE);
   } catch {
     // Already gone
   }
+
+  console.log(`Elementerm daemon stopped (PID: ${pid}).`);
 }
 
 async function openDashboard(): Promise<void> {
@@ -505,23 +535,42 @@ async function removeSession(): Promise<void> {
   }
 }
 
+async function resetState(): Promise<void> {
+  const fs = await import("node:fs");
+  const { STATE_FILE } = await import("./shared/constants.js");
+
+  if (fs.existsSync(STATE_FILE)) {
+    fs.unlinkSync(STATE_FILE);
+    console.log("State cleared. All sessions removed.");
+  } else {
+    console.log("No state file found. Nothing to reset.");
+  }
+}
+
 async function showStatus(): Promise<void> {
   const fs = await import("node:fs");
   const { STATE_FILE, PID_FILE, STATUS_ICONS } = await import(
     "./shared/constants.js"
   );
 
-  if (!fs.existsSync(PID_FILE)) {
-    console.log("Elementerm daemon is not running. Run 'elementerm start' first.");
-    return;
-  }
+  const daemonRunning = fs.existsSync(PID_FILE);
 
   if (!fs.existsSync(STATE_FILE)) {
-    console.log("No sessions found.");
+    if (!daemonRunning) {
+      console.log("Elementerm daemon is not running. Run 'elementerm start' first.");
+    } else {
+      console.log("No sessions found.");
+    }
     return;
   }
 
-  const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  } catch {
+    console.error("State file is corrupted. Run 'elementerm reset' to clear it.");
+    return;
+  }
   const sessions = Object.values(state.sessions) as Array<{
     project: string;
     worktree: string;
@@ -537,7 +586,8 @@ async function showStatus(): Promise<void> {
     return;
   }
 
-  console.log(`\n  Elementerm - ${sessions.length} session(s)\n`);
+  const daemonStatus = daemonRunning ? "daemon running" : "daemon stopped";
+  console.log(`\n  Elementerm - ${sessions.length} session(s) (${daemonStatus})\n`);
 
   // Group by project
   const byProject = new Map<string, typeof sessions>();

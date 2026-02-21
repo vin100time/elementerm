@@ -31,15 +31,27 @@ export class StateStore {
       try {
         const raw = fs.readFileSync(STATE_FILE, "utf-8");
         const loaded = JSON.parse(raw) as AppState;
-        this.state = {
-          ...loaded,
-          daemon: {
-            startedAt: new Date().toISOString(),
-            pid: process.pid,
-            version: VERSION,
-          },
-        };
+        // Validate basic structure
+        if (loaded && typeof loaded.sessions === "object") {
+          this.state = {
+            ...loaded,
+            daemon: {
+              startedAt: new Date().toISOString(),
+              pid: process.pid,
+              version: VERSION,
+            },
+          };
+        } else {
+          console.log("State file has invalid structure, starting fresh.");
+          this.state = createEmptyState();
+        }
       } catch {
+        // Backup corrupted file and start fresh
+        const backupPath = STATE_FILE + ".bak";
+        try {
+          fs.copyFileSync(STATE_FILE, backupPath);
+          console.log(`Corrupted state file backed up to ${backupPath}`);
+        } catch { /* ignore */ }
         this.state = createEmptyState();
       }
     }
@@ -122,6 +134,16 @@ export class StateStore {
     }
 
     delete this.state.sessions[id];
+    this.save();
+  }
+
+  setAllSessionsIdle(): void {
+    for (const session of Object.values(this.state.sessions)) {
+      session.status = "idle";
+    }
+  }
+
+  persist(): void {
     this.save();
   }
 

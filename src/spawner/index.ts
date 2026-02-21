@@ -1,7 +1,7 @@
 import { platform } from "node:os";
-import { spawnWindows } from "./windows.js";
-import { spawnMacos } from "./macos.js";
-import { spawnLinux } from "./linux.js";
+import { spawnWindows, focusWindows } from "./windows.js";
+import { spawnMacos, focusMacos } from "./macos.js";
+import { spawnLinux, focusLinux } from "./linux.js";
 
 export interface SpawnOptions {
   project: string;
@@ -33,5 +33,20 @@ export async function spawnNativeTerminal(
         success: false,
         error: `Unsupported platform: ${os}`,
       };
+  }
+}
+
+export function focusTerminal(title: string): boolean {
+  const os = platform();
+
+  switch (os) {
+    case "win32":
+      return focusWindows(title);
+    case "darwin":
+      return focusMacos();
+    case "linux":
+      return focusLinux(title);
+    default:
+      return false;
   }
 }

@@ -9,6 +9,7 @@ import { GlanceView } from "./views/glance.js";
 import { ScanView } from "./views/scan.js";
 import { FocusView } from "./views/focus.js";
 import { MasterPanel } from "./master-panel.js";
+import { focusTerminal } from "../spawner/index.js";
 
 function useDaemonConnection(): AppState | null {
   const [state, setState] = useState<AppState | null>(null);
@@ -140,6 +141,11 @@ function App() {
     if (input === "g") setView("glance");
     if (input === "s") setView("scan");
     if (input === "f" && selectedSession) setView("focus");
+    if (input === "o" && selectedSession) {
+      const title = `${selectedSession.project}/${selectedSession.worktree}`;
+      focusTerminal(title);
+      return;
+    }
     if (input === "m") { setMasterActive(true); return; }
     if (input === "q") exit();
 
@@ -248,17 +254,17 @@ function App() {
       <Box paddingX={1} borderStyle="single" borderColor="gray" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false}>
         {view === "glance" && (
           <Text color="gray">
-            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[1-9]</Text>jump  <Text color="white" bold>[q]</Text>uit
+            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="green" bold>[o]</Text><Text color="green">pen</Text>  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[1-9]</Text>jump  <Text color="white" bold>[q]</Text>uit
           </Text>
         )}
         {view === "scan" && (
           <Text color="gray">
-            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[Enter]</Text>focus  <Text color="white" bold>[q]</Text>uit
+            <Text color="white" bold>[g]</Text>lance  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[f]</Text>ocus  <Text color="green" bold>[o]</Text><Text color="green">pen</Text>  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[Enter]</Text>focus  <Text color="white" bold>[q]</Text>uit
           </Text>
         )}
         {view === "focus" && (
           <Text color="gray">
-            <Text color="white" bold>[Esc]</Text>back  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[g]</Text>lance  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[q]</Text>uit
+            <Text color="white" bold>[Esc]</Text>back  <Text color="green" bold>[o]</Text><Text color="green">pen</Text>  <Text color="white" bold>[s]</Text>can  <Text color="white" bold>[g]</Text>lance  <Text color="magenta" bold>[m]</Text><Text color="magenta">aster</Text>  <Text color="white" bold>[Tab]</Text>next  <Text color="white" bold>[q]</Text>uit
           </Text>
         )}
       </Box>
@@ -269,9 +275,9 @@ function App() {
 export async function renderDashboard(): Promise<void> {
   if (!fs.existsSync(PID_FILE)) {
     console.error(
-      "Elementerm daemon is not running. Run 'elementerm start' first."
+      "Warning: Elementerm daemon is not running. Dashboard will show last known state."
     );
-    process.exit(1);
+    console.error("Run 'elementerm start' to enable real-time updates.\n");
   }
 
   // Clear screen and render fullscreen

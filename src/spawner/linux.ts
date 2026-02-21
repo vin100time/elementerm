@@ -1,5 +1,21 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import type { SpawnOptions, SpawnResult } from "./index.js";
+
+export function focusLinux(title: string): boolean {
+  try {
+    // wmctrl can activate a window by title substring
+    execSync(`wmctrl -a "${title}"`, { stdio: "ignore", timeout: 3000 });
+    return true;
+  } catch {
+    // xdotool fallback
+    try {
+      execSync(`xdotool search --name "${title}" windowactivate`, { stdio: "ignore", timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
 
 // Strip Claude Code env vars so the new session doesn't detect nesting
 function cleanEnv(): NodeJS.ProcessEnv {
